@@ -33,7 +33,7 @@ class ProjEuropeanPricer(StrikesPricer):
         self._N = N
         self._L = L
         self._alpha_override = alpha_override
-        self._efficient_multi_strike = [1]
+        self._efficient_multi_strike = [1, 3]
 
         if order not in (0, 1, 3):
             raise NotImplementedError("Only cubic, linear and Haar implemented so far")
@@ -185,6 +185,7 @@ class Impl(ABC):
 # ==============
 # Cubic Basis
 # ==============
+
 class CubicImpl(Impl):
     def __init__(self,
                  N: int,
@@ -199,23 +200,132 @@ class CubicImpl(Impl):
         self._base_integrand = self._init_base_integrand()
 
         # Precompute the exponentials needed to evaluate payoff
-        self._expos = np.exp(self.dx * np.arange(0, max_n_bar - 2))
+        self._expos = np.exp(self.dx * np.arange(0, max_n_bar - 1))
+
+
 
     def integrand(self, xmin: float) -> np.ndarray:
         return self._base_integrand * np.exp(-1j * xmin * self.w)
 
     def num_coeffs(self, nbar: int) -> int:
-        return nbar + 1
+        return nbar + 2
+
 
     def coefficients(self,
-                     nbar: int, W: float, S0: float, xmin: float) -> np.ndarray:
+                     nbar: int, W: float, S0: float, xmin: float, rho: float = 0,
+                     misaligned_grid: bool = False) -> np.ndarray:
         self.G[nbar] = W * self.g1
         self.G[nbar - 1] = W * self.g2
         self.G[nbar - 2] = W * self.g3
         # TODO: for multi strike case, can reuse the expos
         self.G[: nbar - 2] = W - S0 * np.exp(xmin) * self._expos[:nbar - 2] / 90 * self.g4
 
+        if misaligned_grid == True:
+            def kj(j: int) -> float:
+                return zeta - j
+
+            dx = self.dx
+            zeta = self.a * rho
+
+            q_plus = 0.5 * (1 + np.sqrt(3 / 5))
+            q_minus = 0.5 * (1 - np.sqrt(3 / 5))
+
+            zeta_plus = zeta * q_plus
+            zeta_minus = zeta * q_minus
+
+            rho_Plus = rho * q_plus
+            rho_minus = rho * q_minus
+
+            # theta computation
+            theta_P1 = (
+                    1
+                    / 20
+                    * (
+                            np.exp(-(7 / 4) * dx) / 54
+                            + np.exp(-1.5 * dx) / 18
+                            + np.exp(-1.25 * dx) / 2
+                            + 7 * np.exp(-dx) / 27
+                    )
+            )
+
+            theta_0 = (1 / 20) * (
+                    28 / 27
+                    + (1 / 54) * np.exp(-(7 / 4) * dx)
+                    + (121 / 54) * np.exp(-0.75 * dx)
+                    + (235 / 54) * np.exp(-0.25 * dx)
+                    + (1 / 18) * np.exp(-1.5 * dx)
+                    + (23 / 18) * np.exp(-0.5 * dx)
+                    + (1 / 2) * np.exp(-1.25 * dx)
+                    + (14 / 27) * np.exp(-dx)
+            )
+
+            theta_M1 = (1 / 90) * (
+                    ((1 / 3) * (28 + 7 * np.exp(-dx)))
+                    + ((1 / 12) * (
+                    14 * np.exp(dx)
+                    + np.exp(-(7 / 4) * dx)
+                    + 242 * np.cosh(0.75 * dx)
+                    + 470 * np.cosh(0.25 * dx)
+            ))
+                    + ((1 / 4) * (np.exp(-1.5 * dx) + 9 * np.exp(-1.25 * dx) + 46 * np.cosh(0.5 * dx)))
+            )
+
+            # delta bar computation
+            delta_bar_M1 = ((4 / 3) * zeta) + (17 / 24) + (
+                    (
+                            (kj(-1)) ** 2
+                    )
+                    * (
+                            kj(-1)
+                            * (1 / 3 - 1 / 24 * kj(-1))
+                            - 1
+                    )
+            )
+
+            delta_bar_0 = zeta * (
+                    2 / 3 + (
+                    (zeta ** 2) * (
+                    (1 / 8) * zeta - 1 / 3)))
+
+            delta_bar_P1 = ((2 / 3) * zeta) - 5 / 24 - (
+                    (kj(1) ** 4) * ((1 / 8) * kj(1) + 1 / 3)
+            )
+
+            delta_bar_P2 = (kj(2) ** 2) * (
+                    1 + (kj(2) * (1 / 3 + (1 / 24) * kj(2)))
+            ) + (4 / 3) * zeta - 2
+
+            # delta computation
+            delta_M1 = ((np.exp(dx) / 6)
+                        * (zeta / 18)) * (
+                               5 * (((1 - zeta_minus) ** 3) * np.exp(rho_minus)
+                                    + ((1 - zeta_plus) ** 3) * np.exp(rho_Plus))
+                               + ((2 - zeta) ** 3) * np.exp(rho / 2))
+
+            delta_0 = (zeta / 18) * (
+                    (10 * (2 / 3 + ((zeta_minus ** 2) * (0.5 * zeta_minus - 1))) * np.exp(rho_minus))
+                    + (8 * (2 / 3 + ((zeta ** 2) * (0.5 * zeta - 1))) * np.exp(0.5 * rho))
+            )
+
+            delta_P1 = (np.exp(-dx) * (zeta / 18)) * (
+                    (10 * (2 / 3 - (0.5 * ((zeta_minus - 1) ** 2) * (zeta_minus + 1) * np.exp(rho_minus))))
+                    + (8 * (2 / 3 - (0.5 * ((0.5 * zeta - 1) ** 2) * (0.5 * zeta + 1))) * np.exp(0.5 * rho))
+            )
+
+            delta_P2 = ((np.exp(-2 * dx) / 6) * (zeta / 18)) * (
+                    (10 * (zeta_minus ** 3) * np.exp(rho_minus)) + ((zeta ** 3) * np.exp(0.5 * rho)))
+
+            self.G[nbar + 1] = W * (delta_bar_P2 - (np.exp(- rho) * np.exp(2 * dx) * delta_P2))
+
+            self.G[nbar] += W * (
+                        delta_bar_P1 - (np.exp(-rho) * np.exp(dx) * (delta_P1 + theta_P1)) + np.exp(dx) * theta_P1)
+
+            self.G[nbar - 1] += W * (delta_bar_0 - (np.exp(-rho) * (theta_0 + delta_0)) + theta_0)
+            self.G[nbar - 2] += W * (
+                        delta_bar_M1 - (np.exp(-rho) * np.exp(-dx) * (theta_M1 + delta_M1)) + np.exp(-dx) * theta_M1)
+
         return self.G
+
 
     def cons(self):
         return 32 * self.a ** 4
@@ -241,6 +351,7 @@ class CubicImpl(Impl):
                                                       + 23 * np.cosh(.5 * dx)) + 1 / 6
                    * (np.cosh(7 / 4 * dx) + 121 * np.cosh(.75 * dx) + 235 * np.cosh(.25 * dx)))
 
+
     def _init_base_integrand(self) -> np.ndarray:
         b0 = 1208 / 2520
         b1 = 1191 / 2520
@@ -257,6 +368,7 @@ class CubicImpl(Impl):
 
         grand[0] = 1 / self.cons()
         return grand
+
 
 
 class LinearImpl(Impl):
@@ -317,18 +429,18 @@ class LinearImpl(Impl):
             dx = self.dx
             zeta = self.a * rho
 
-            qPlus = 0.5 * (1 + np.sqrt(3 / 5))
-            qMinus = 0.5 * (1 - np.sqrt(3 / 5))
+            q_plus = 0.5 * (1 + np.sqrt(3 / 5))
+            q_minus = 0.5 * (1 - np.sqrt(3 / 5))
 
-            zetaPlus = zeta * qPlus
-            zetaMinus = zeta * qMinus
+            zeta_plus = zeta * q_plus
+            zeta_minus = zeta * q_minus
 
-            rhoPlus = rho * qPlus
-            rhoMinus = rho * qMinus
+            rho_Plus = rho * q_plus
+            rho_minus = rho * q_minus
 
             # theta computation
 
-            theta0 = (1 / 15) * (
+            theta_0 = (1 / 15) * (
                     7 / 6
                     + 4 / 3 * np.exp(-3 / 4 * dx)
                     + np.exp(-0.5 * dx)
@@ -343,21 +455,21 @@ class LinearImpl(Impl):
 
             # delta computation
 
-            delta0 = (zeta / 18) \
-                     * (4 * (2 - zeta) * np.exp(rho / 2) \
-                        + 5 \
-                        * ((1 - zetaMinus) * np.exp(rhoMinus) + (1 - zetaPlus) * np.exp(rhoPlus))
-                        )
+            delta_0 = (zeta / 18) \
+                      * (4 * (2 - zeta) * np.exp(rho / 2) \
+                         + 5 \
+                         * ((1 - zeta_minus) * np.exp(rho_minus) + (1 - zeta_plus) * np.exp(rho_Plus))
+                         )
 
-            deltaP1 = (zeta / 18) * np.exp(-dx) \
-                      * (
-                              4 * zeta * np.exp(0.5 * rho) + 5 * (
-                              zetaMinus * np.exp(rhoMinus) + zetaPlus * np.exp(rhoPlus))
-                      )
+            delta_P1 = (zeta / 18) * np.exp(-dx) \
+                       * (
+                               4 * zeta * np.exp(0.5 * rho) + 5 * (
+                               zeta_minus * np.exp(rho_minus) + zeta_plus * np.exp(rho_Plus))
+                       )
 
-            self.G[nbar] = W * (delta_bar_P1 - np.exp(-rho) * np.exp(dx) * deltaP1)
+            self.G[nbar] = W * (delta_bar_P1 - np.exp(-rho) * np.exp(dx) * delta_P1)
 
-            self.G[nbar - 1] += W * (delta_bar_0 - np.exp(-rho) * (theta0 + delta0) + theta0)
+            self.G[nbar - 1] += W * (delta_bar_0 - np.exp(-rho) * (theta_0 + delta_0) + theta_0)
 
         return self.G
 
